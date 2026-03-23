@@ -1,0 +1,28 @@
+[project]
+name = "text-from-wellreport"
+version = "0.1.0"
+description = "Test"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "azure-identity",
+    "pymupdf>=1.24.0",
+    "ipykernel>=7.2.0",
+    "pandas>=3.0.1",
+    "easyocr>=1.7.2",
+    "regex>=2024.11.6",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[tool.uv]
+native-tls = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
