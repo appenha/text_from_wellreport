@@ -1,41 +1,41 @@
 import regex
 
+_FORMATION_PATTERN = regex.compile(
+    r"(?:Tare|Nise|Kvitnos|Lange|Lysing)",
+    regex.IGNORECASE,
+)
+
+_TEST_TYPE_PATTERN = regex.compile(
+    r"(?:"
+    r"(?:mini\s+DST){e<=1}"
+    r"|(?:DST){e<=1}"
+    r"|(?:drill\s+stem\s+test){e<=1}"
+    r"|(?:transient\s+test){e<=1}"
+    r")",
+    regex.IGNORECASE | regex.BESTMATCH,
+)
+
+
 def find_test_formation_mentions(text: str) -> list[str]:
-    """Find mentions of DST/transient tests in combination with known formations.
+    """Two-step search: first check the text contains a formation, then find
+    any test type within 200 characters of each formation match.
 
-    Matches any of:
-      - DST, mini DST, Drill stem test, transient test
-    followed (within ~200 characters) by any of:
-      - Tare, Nise, Kvitnos, Lange, Lysing
-    or the reverse order (formation then test type).
+    Step 1 — scan for formations (Tare, Nise, Kvitnos, Lange, Lysing).
+    Step 2 — for each formation found, extract a 200-char window around it
+              and check whether a test type (DST, mini DST, drill stem test,
+              transient test) appears in that window.
 
-    Each keyword allows up to 2 spelling mistakes (character substitutions,
-    insertions, or deletions) via fuzzy matching ({e<=2}).
-    Short 3-letter terms (DST) allow at most 1 error to avoid false positives.
+    Each keyword allows up to 1 spelling mistake via fuzzy matching ({e<=1}).
 
-    Returns a list of matched substrings.
+    Returns a list of window substrings that contain both a formation and a
+    test type, one entry per matching formation occurrence.
     """
-    test_types = (
-        r"(?:"
-        r"(?:mini\s+DST){e<=1}"
-        r"|(?:DST){e<=1}"
-        r"|(?:drill\s+stem\s+test){e<=1}"
-        r"|(?:transient\s+test){e<=1}"
-        r")"
-    )
-    formations = (
-        r"(?:"
-        r"(?:Tare){e<=1}"
-        r"|(?:Nise){e<=1}"
-        r"|(?:Kvitnos){e<=1}"
-        r"|(?:Lange){e<=1}"
-        r"|(?:Lysing){e<=1}"
-        r")"
-    )
-    between = r"[\s\S]{0,200}?"
-
-    pattern = regex.compile(
-        rf"(?:{test_types}{between}{formations}|{formations}{between}{test_types})",
-        regex.IGNORECASE | regex.BESTMATCH,
-    )
-    return pattern.findall(text)
+    results = []
+    for fm in _FORMATION_PATTERN.finditer(text):
+        # 200 chars before and after the formation match
+        start = max(0, fm.start() - 200)
+        end = min(len(text), fm.end() + 200)
+        window = text[start:end]
+        if _TEST_TYPE_PATTERN.search(window):
+            results.append(window.strip())
+    return results
