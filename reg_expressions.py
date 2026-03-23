@@ -17,19 +17,19 @@ def find_test_formation_mentions(text: str) -> list[str]:
     """
     test_types = (
         r"(?:"
-        r"(?:mini\s+DST){e<=2}"
+        r"(?:mini\s+DST){e<=1}"
         r"|(?:DST){e<=1}"
-        r"|(?:drill\s+stem\s+test){e<=2}"
-        r"|(?:transient\s+test){e<=2}"
+        r"|(?:drill\s+stem\s+test){e<=1}"
+        r"|(?:transient\s+test){e<=1}"
         r")"
     )
     formations = (
         r"(?:"
         r"(?:Tare){e<=1}"
         r"|(?:Nise){e<=1}"
-        r"|(?:Kvitnos){e<=2}"
+        r"|(?:Kvitnos){e<=1}"
         r"|(?:Lange){e<=1}"
-        r"|(?:Lysing){e<=2}"
+        r"|(?:Lysing){e<=1}"
         r")"
     )
     between = r"[\s\S]{0,200}?"
