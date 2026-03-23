@@ -6,8 +6,8 @@ from pathlib import Path
 
 from reg_expressions import find_test_formation_mentions
 
-PDF_PATH = "static/6406-02-02_Final_Well_Report.PDF"
-OCR_CACHE = Path("static/ocr_cache.json")
+PDF_PATH = Path("static/6406-02-02_Final_Well_Report.PDF")
+OCR_CACHE = Path(f"static/{PDF_PATH.stem}_ocr_cache.json")
 START_PAGE = 3  # 0-based: skip first 3 PDF pages; page 1 = 4th PDF page
 
 
@@ -15,7 +15,7 @@ START_PAGE = 3  # 0-based: skip first 3 PDF pages; page 1 = 4th PDF page
 
 def run_ocr() -> dict[int, str]:
     fitz.TOOLS.mupdf_display_errors(False)
-    doc = fitz.open(PDF_PATH)
+    doc = fitz.open(str(PDF_PATH))
     reader = easyocr.Reader(["en"], gpu=True)
     total = doc.page_count - START_PAGE
     pages: dict[int, str] = {}
