@@ -1,12 +1,12 @@
 import regex
 
 _FORMATION_PATTERN = regex.compile(
-    r"(?:Tare|Nise|Kvitnos|Lange|Lysing)",
+    r"(?:\b(?:Tare|Nise|Kvitnos|Lange|Lysing)\b)",
     regex.IGNORECASE,
 )
 
 _TEST_TYPE_PATTERN = regex.compile(
-    r"(?:(?:dst|drill|stem|test|transient)\s)",
+    r"(?:\b(?:dst|drill|stem|test|transient))",
     regex.IGNORECASE,
 )
 

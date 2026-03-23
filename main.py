@@ -6,7 +6,7 @@ from pathlib import Path
 
 from reg_expressions import find_test_formation_mentions
 
-PDF_PATH = Path("static/6406-02-02_Final_Well_Report.PDF")
+PDF_PATH = Path("static/FWR_6406-02-03_PB-706-0393_2_T3.PDF")
 OCR_CACHE = Path(f"static/{PDF_PATH.stem}_ocr_cache.json")
 START_PAGE = 3  # 0-based: skip first 3 PDF pages; page 1 = 4th PDF page
 
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     if hits:
         rprint(f"Found test/formation mentions on {len(hits)} page(s):\n")
         for page_num, matches in sorted(hits.items()):
-            rprint(Rule(f"Page {page_num}", style="dim"))
+            rprint(Rule(f"Page {page_num}"))
             for m in matches:
                 rprint(f"  {m}\n")
     else:
