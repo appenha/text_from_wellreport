@@ -49,12 +49,14 @@ def load_or_run_ocr() -> dict[int, str]:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from rich import print as rprint
+    from rich.rule import Rule
+
     # 1. OCR (or load cache)
     pages = load_or_run_ocr()
-    print(f"Loaded {len(pages)} pages.\n")
+    rprint(f"Loaded {len(pages)} pages.\n")
 
     # 2. Scan every page with the regex and report hits with page numbers
-    from IPython import embed
     hits: dict[int, list[str]] = {}
     for page_num, text in pages.items():
         text_rendered = text.replace("\n", " ")
@@ -63,11 +65,11 @@ if __name__ == "__main__":
             hits[page_num] = matches
 
     if hits:
-        print(f"Found test/formation mentions on {len(hits)} page(s):\n")
+        rprint(f"Found test/formation mentions on {len(hits)} page(s):\n")
         for page_num, matches in sorted(hits.items()):
-            print(f"  Page {page_num}:")
+            rprint(Rule(f"Page {page_num}", style="dim"))
             for m in matches:
-                print(f"    - {m}")
+                rprint(f"  {m}\n")
     else:
-        print("No test/formation mentions found in any page.")
+        rprint("[yellow]No test/formation mentions found in any page.[/yellow]")
 
