@@ -1,21 +1,24 @@
+from rich import print as rprint
+from rich.rule import Rule
 import json
 import fitz  # PyMuPDF
 import easyocr
 import numpy as np
 from pathlib import Path
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 from reg_expressions import find_formation_mentions
 
-def get_first_two_paths():
+def get_paths():
     with open("well_test_data_paths.json", encoding="utf-8") as f:
         data = json.load(f)
-        return [Path(p) for p in data][:2]
+        indexed_paths = list(enumerate(data))
+        return [(index, Path(p)) for index, p in indexed_paths]
 
-PDF_PATHS = get_first_two_paths()
-import IPython; IPython.embed()  # Debug breakpoint
+PDF_PATHS = get_paths()
+
 # OCR_CACHE = Path(f"static/{PDF_PATH.stem}_ocr_cache.json")
 START_PAGE = 0  # 0-based: skip first 3 PDF pages; page 1 = 4th PDF page
-
 
 # ── OCR ──────────────────────────────────────────────────────────────────────
 
@@ -40,48 +43,43 @@ def run_ocr(pdf_path: Path) -> dict[int, str]:
 
 
 
-def load_or_run_ocr(pdf_path: Path) -> dict[int, str]:
-    ocr_cache = pdf_path.parent / f"{pdf_path.stem}_ocr_cache.json"
-    if ocr_cache.exists():
-        print(f"Loading cached OCR from {ocr_cache} ...")
-        raw = json.loads(ocr_cache.read_text(encoding="utf-8"))
-        return {int(k): v for k, v in raw.items()}
-    print(f"Running OCR on {pdf_path} (this may take several minutes) ...")
-    pages = run_ocr(pdf_path)
-    ocr_cache.write_text(
-        json.dumps(pages, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"OCR results cached to {ocr_cache}\n")
-    return pages
-
-
 # ── Entry point ───────────────────────────────────────────────────────────────
+def process_pdf(pdf_path: Path):
+    rprint(Rule(f"[bold]{pdf_path.name}[/bold]", style="blue"))
+    # 1. OCR (or load cache)
+    pages = run_ocr(pdf_path)
+    rprint(f"Loaded {len(pages)} pages.\n")
 
+    # 2. Scan every page with the regex and report hits with page numbers
+    hits: dict[int, list[str]] = {}
+    for page_num, text in pages.items():
+        text_rendered = text.replace("\n", " ")
+        matches = find_formation_mentions(text_rendered)
+        if matches:
+            hits[page_num] = matches
+    results = {str(pdf_path): hits}
+    rprint(f"For {pdf_path.name}, found formation mentions on {len(hits)} page(s).\n")
+    return results
+import os
+
+RESULTS_DIR = Path("results")
+def process_one(index, path):
+    results = process_pdf(path)
+    path_json = RESULTS_DIR / f"{index}.json"
+
+    with path_json.open("w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    return index, path_json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+MAX_WORKERS = 2
 if __name__ == "__main__":
-    from rich import print as rprint
-    from rich.rule import Rule
+    
+    for index, path in PDF_PATHS:
+        if str(f"{index}.json") in os.listdir(RESULTS_DIR):
+            print(f"Skipping {path.name} (already processed)")
+            continue    
+        print(f"Processing {path.name} (index {index})...")
+        process_one(index=index, path=path)
 
-    for pdf_path in PDF_PATHS:
-        rprint(Rule(f"[bold]{pdf_path.name}[/bold]", style="blue"))
-        # 1. OCR (or load cache)
-        pages = load_or_run_ocr(pdf_path)
-        rprint(f"Loaded {len(pages)} pages.\n")
-
-        # 2. Scan every page with the regex and report hits with page numbers
-        hits: dict[int, list[str]] = {}
-        for page_num, text in pages.items():
-            text_rendered = text.replace("\n", " ")
-            matches = find_formation_mentions(text_rendered)
-            if matches:
-                hits[page_num] = matches
-
-        if hits:
-            rprint(f"Found formation mentions on {len(hits)} page(s):\n")
-            for page_num, matches in sorted(hits.items()):
-                rprint(Rule(f"Page {page_num}"))
-                for m in matches:
-                    rprint(f"  {m}\n")
-        else:
-            rprint("[yellow]No formation mentions found in any page.[/yellow]")
-        rprint()
 
