@@ -3,14 +3,19 @@ Simple GUI for selecting wells and processing their PDFs.
 Run with:  uv run app.py  (or python app.py if venv is active)
 """
 
+import io
 import json
 import os
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from process_report import RESULTS_DIR, process_one
+from process_report import RESULTS_DIR, process_one, process_pdf
+
+STATIC_DIR = Path("static")
+STATIC_RESULTS_DIR = RESULTS_DIR / "static"
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
@@ -29,13 +34,40 @@ def group_by_well(paths: list[tuple[int, Path]]) -> dict[str, list[tuple[int, Pa
     return groups
 
 
+def load_static_pdfs() -> list[Path]:
+    """Return all PDF files found in the static/ directory."""
+    if not STATIC_DIR.exists():
+        return []
+    return sorted(p for p in STATIC_DIR.iterdir() if p.suffix.lower() == ".pdf")
+
+
 def already_done(index: int) -> bool:
     return f"{index}.json" in os.listdir(RESULTS_DIR)
+
+
+def already_done_static(pdf_path: Path) -> bool:
+    return (STATIC_RESULTS_DIR / f"{pdf_path.stem}.json").exists()
 
 
 def load_result_file(json_path: Path) -> dict:
     with open(json_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+# ── Stdout redirector ───────────────────────────────────────────────────────────
+
+class _LogStream(io.TextIOBase):
+    """Forwards writes to the app log widget (used to capture print() in run_ocr)."""
+    def __init__(self, log_fn):
+        self._log_fn = log_fn
+
+    def write(self, text: str) -> int:
+        if text:
+            self._log_fn(text)
+        return len(text)
+
+    def flush(self):
+        pass
 
 
 # ── Main application ──────────────────────────────────────────────────────────
@@ -50,8 +82,11 @@ class App(tk.Tk):
         self._all_paths = load_paths()
         self._groups = group_by_well(self._all_paths)
         self._check_vars: dict[str, tk.BooleanVar] = {}
+        self._static_pdfs: list[Path] = load_static_pdfs()
+        self._static_check_vars: dict[str, tk.BooleanVar] = {}
         # maps Treeview iid -> Path of result file
         self._result_file_map: dict[str, Path] = {}
+        self._cancel_event = threading.Event()
 
         self._build_ui()
 
@@ -84,6 +119,12 @@ class App(tk.Tk):
         ttk.Button(toolbar, text="Select All",   command=self._select_all).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="Deselect All", command=self._deselect_all).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="Select Unprocessed", command=self._select_unprocessed).pack(side="left")
+
+        self._cancel_btn = ttk.Button(
+            toolbar, text="✕  Cancel", command=self._cancel_processing
+        )
+        self._cancel_btn.pack(side="right", padx=(4, 0))
+        self._cancel_btn.state(["disabled"])
 
         self._process_btn = ttk.Button(
             toolbar, text="▶  Process Selected", command=self._start_processing
@@ -129,7 +170,8 @@ class App(tk.Tk):
         for widget in self._well_frame.winfo_children():
             widget.destroy()
 
-        for col, (well_name, pdfs) in enumerate(sorted(self._groups.items())):
+        wells = sorted(self._groups.items())
+        for col, (well_name, pdfs) in enumerate(wells):
             var = tk.BooleanVar(value=False)
             self._check_vars[well_name] = var
 
@@ -141,6 +183,36 @@ class App(tk.Tk):
                 self._well_frame, text=label, variable=var, padding=(4, 2)
             )
             cb.grid(row=col // 3, column=col % 3, sticky="w", padx=8, pady=1)
+
+        # ── Examples separator ──
+        n_cols = 3
+        sep_row = (len(wells) + n_cols - 1) // n_cols + 1
+
+        ttk.Separator(self._well_frame, orient="horizontal").grid(
+            row=sep_row, column=0, columnspan=n_cols,
+            sticky="ew", padx=8, pady=(8, 4),
+        )
+        ttk.Label(
+            self._well_frame,
+            text="Examples (static/)",
+            font=("TkDefaultFont", 9, "bold"),
+            foreground="#7a5800",
+        ).grid(row=sep_row + 1, column=0, columnspan=n_cols, sticky="w", padx=8, pady=(0, 4))
+
+        self._static_check_vars.clear()
+        for s_col, pdf_path in enumerate(self._static_pdfs):
+            var = tk.BooleanVar(value=False)
+            self._static_check_vars[pdf_path.stem] = var
+            done_flag = "✓" if already_done_static(pdf_path) else "○"
+            label = f"{done_flag}  {pdf_path.name}"
+            cb = ttk.Checkbutton(
+                self._well_frame, text=label, variable=var, padding=(4, 2)
+            )
+            cb.grid(
+                row=sep_row + 2 + s_col // n_cols,
+                column=s_col % n_cols,
+                sticky="w", padx=8, pady=1,
+            )
 
     # ── Results tab ──────────────────────────────────────────────────────────
 
@@ -211,44 +283,71 @@ class App(tk.Tk):
         self._results_tree.delete(*self._results_tree.get_children())
         self._result_file_map.clear()
 
-        if not RESULTS_DIR.exists():
-            return
+        # ── Well results ──────────────────────────────────────────────────────
+        if RESULTS_DIR.exists():
+            # Index -> well name lookup
+            index_to_well: dict[int, str] = {}
+            for well_name, pdfs in self._groups.items():
+                for idx, _ in pdfs:
+                    index_to_well[idx] = well_name
 
-        # Index -> well name lookup
-        index_to_well: dict[int, str] = {}
-        for well_name, pdfs in self._groups.items():
-            for idx, _ in pdfs:
-                index_to_well[idx] = well_name
-
-        # Group result files by well
-        well_nodes: dict[str, str] = {}  # well_name -> treeview node iid
-        result_files = sorted(
-            RESULTS_DIR.glob("*.json"),
-            key=lambda p: int(p.stem) if p.stem.isdigit() else -1,
-        )
-
-        for json_path in result_files:
-            index = int(json_path.stem) if json_path.stem.isdigit() else -1
-            well_name = index_to_well.get(index, "Unknown")
-
-            if well_name not in well_nodes:
-                node = self._results_tree.insert("", "end", text=well_name, open=False)
-                well_nodes[well_name] = node
-
-            # Count pages with hits
-            try:
-                data = load_result_file(json_path)
-                hits_count = sum(len(v) for v in data.values())
-            except Exception:
-                hits_count = 0
-
-            hits_label = str(hits_count) if hits_count else "—"
-            iid = self._results_tree.insert(
-                well_nodes[well_name], "end",
-                text=json_path.stem + ".json",
-                values=(hits_label,),
+            well_nodes: dict[str, str] = {}  # well_name -> treeview node iid
+            result_files = sorted(
+                RESULTS_DIR.glob("*.json"),
+                key=lambda p: int(p.stem) if p.stem.isdigit() else -1,
             )
-            self._result_file_map[iid] = json_path
+
+            for json_path in result_files:
+                index = int(json_path.stem) if json_path.stem.isdigit() else -1
+                well_name = index_to_well.get(index, "Unknown")
+
+                if well_name not in well_nodes:
+                    node = self._results_tree.insert("", "end", text=well_name, open=False)
+                    well_nodes[well_name] = node
+
+                try:
+                    data = load_result_file(json_path)
+                    hits_count = sum(len(v) for v in data.values())
+                except Exception:
+                    hits_count = 0
+
+                hits_label = str(hits_count) if hits_count else "—"
+                iid = self._results_tree.insert(
+                    well_nodes[well_name], "end",
+                    text=json_path.stem + ".json",
+                    values=(hits_label,),
+                )
+                self._result_file_map[iid] = json_path
+
+        # ── Example results (static/) ─────────────────────────────────────────
+        if STATIC_RESULTS_DIR.exists():
+            static_files = sorted(STATIC_RESULTS_DIR.glob("*.json"))
+            if static_files:
+                examples_node = self._results_tree.insert(
+                    "", "end",
+                    text="── Examples (static/) ──",
+                    open=True,
+                    tags=("examples_header",),
+                )
+                self._results_tree.tag_configure(
+                    "examples_header",
+                    foreground="#7a5800",
+                    font=("TkDefaultFont", 9, "bold"),
+                )
+                for json_path in static_files:
+                    try:
+                        data = load_result_file(json_path)
+                        hits_count = sum(len(v) for v in data.values())
+                    except Exception:
+                        hits_count = 0
+
+                    hits_label = str(hits_count) if hits_count else "—"
+                    iid = self._results_tree.insert(
+                        examples_node, "end",
+                        text=json_path.name,
+                        values=(hits_label,),
+                    )
+                    self._result_file_map[iid] = json_path
 
     def _on_result_selected(self, _event=None):
         selection = self._results_tree.selection()
@@ -314,9 +413,13 @@ class App(tk.Tk):
     def _select_all(self):
         for var in self._check_vars.values():
             var.set(True)
+        for var in self._static_check_vars.values():
+            var.set(True)
 
     def _deselect_all(self):
         for var in self._check_vars.values():
+            var.set(False)
+        for var in self._static_check_vars.values():
             var.set(False)
 
     def _select_unprocessed(self):
@@ -324,48 +427,113 @@ class App(tk.Tk):
             pdfs = self._groups[well_name]
             has_pending = any(not already_done(idx) for idx, _ in pdfs)
             var.set(has_pending)
+        for pdf_path in self._static_pdfs:
+            self._static_check_vars[pdf_path.stem].set(
+                not already_done_static(pdf_path)
+            )
 
     # ── Processing ────────────────────────────────────────────────────────────
 
     def _start_processing(self):
-        selected = [
+        selected_wells = [
             (well, self._groups[well])
             for well, var in self._check_vars.items()
             if var.get()
         ]
-        if not selected:
-            self._log_write("No wells selected.\n")
+        selected_static = [
+            pdf_path
+            for pdf_path in self._static_pdfs
+            if self._static_check_vars[pdf_path.stem].get()
+        ]
+        if not selected_wells and not selected_static:
+            self._log_write("No wells or examples selected.\n")
             return
 
+        self._cancel_event.clear()
         self._process_btn.state(["disabled"])
-        thread = threading.Thread(target=self._run_processing, args=(selected,), daemon=True)
+        self._cancel_btn.state(["!disabled"])
+        thread = threading.Thread(
+            target=self._run_processing,
+            args=(selected_wells, selected_static),
+            daemon=True,
+        )
         thread.start()
 
-    def _run_processing(self, selected: list[tuple[str, list[tuple[int, Path]]]]):
+    def _cancel_processing(self):
+        self._cancel_event.set()
+        self._cancel_btn.state(["disabled"])
+        self._log_write("\n[Cancelling — waiting for current PDF to finish...]\n")
+
+    def _run_processing(
+        self,
+        selected_wells: list[tuple[str, list[tuple[int, Path]]]],
+        selected_static: list[Path],
+    ):
         RESULTS_DIR.mkdir(exist_ok=True)
-        total_pdfs = sum(len(pdfs) for _, pdfs in selected)
+        total_pdfs = sum(len(pdfs) for _, pdfs in selected_wells) + len(selected_static)
         done_count = 0
+        cancelled = False
 
-        for well_name, pdfs in selected:
-            self._log_write(f"\n── {well_name} ({len(pdfs)} PDF(s)) ──\n")
-            for index, path in pdfs:
-                if already_done(index):
-                    self._log_write(f"  [skip] {path.name} (already processed)\n")
+        # Redirect sys.stdout so that print() calls inside run_ocr appear in the log
+        _orig_stdout = sys.stdout
+        sys.stdout = _LogStream(self._log_write)
+        try:
+            for well_name, pdfs in selected_wells:
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
+                self._log_write(f"\n── {well_name} ({len(pdfs)} PDF(s)) ──\n")
+                for index, path in pdfs:
+                    if self._cancel_event.is_set():
+                        cancelled = True
+                        break
+                    if already_done(index):
+                        self._log_write(f"  [skip] {path.name} (already processed)\n")
+                        done_count += 1
+                        continue
+                    self._log_write(f"  [proc] {path.name} ...\n")
+                    try:
+                        _, result_path = process_one(index=index, path=path)
+                        self._log_write(f"         → saved to {result_path}\n")
+                    except Exception as exc:
+                        self._log_write(f"         ERROR: {exc}\n")
                     done_count += 1
-                    continue
-                self._log_write(f"  [proc] {path.name} ...\n")
-                try:
-                    _, result_path = process_one(index=index, path=path)
-                    self._log_write(f"         → saved to {result_path}\n")
-                except Exception as exc:
-                    self._log_write(f"         ERROR: {exc}\n")
-                done_count += 1
+                if cancelled:
+                    break
 
-        self._log_write(f"\nDone. {done_count}/{total_pdfs} PDFs processed.\n")
+            if not cancelled and selected_static:
+                self._log_write(f"\n── Examples (static/) ({len(selected_static)} PDF(s)) ──\n")
+                STATIC_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+                for pdf_path in selected_static:
+                    if self._cancel_event.is_set():
+                        cancelled = True
+                        break
+                    if already_done_static(pdf_path):
+                        self._log_write(f"  [skip] {pdf_path.name} (already processed)\n")
+                        done_count += 1
+                        continue
+                    self._log_write(f"  [proc] {pdf_path.name} ...\n")
+                    try:
+                        results = process_pdf(pdf_path)
+                        out = STATIC_RESULTS_DIR / f"{pdf_path.stem}.json"
+                        with out.open("w", encoding="utf-8") as f:
+                            json.dump(results, f, ensure_ascii=False, indent=2)
+                        self._log_write(f"         → saved to {out}\n")
+                    except Exception as exc:
+                        self._log_write(f"         ERROR: {exc}\n")
+                    done_count += 1
+        finally:
+            sys.stdout = _orig_stdout
+
+        if cancelled:
+            self._log_write(f"\nCancelled. {done_count}/{total_pdfs} PDFs processed.\n")
+        else:
+            self._log_write(f"\nDone. {done_count}/{total_pdfs} PDFs processed.\n")
         self.after(0, self._on_processing_finished)
 
     def _on_processing_finished(self):
         self._process_btn.state(["!disabled"])
+        self._cancel_btn.state(["disabled"])
         self._populate_well_list()  # refresh done counts
 
     def _log_write(self, message: str):
