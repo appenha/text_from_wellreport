@@ -71,8 +71,6 @@ def process_one(index, path):
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     return index, path_json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-MAX_WORKERS = 2
 if __name__ == "__main__":
     
     for index, path in PDF_PATHS:
