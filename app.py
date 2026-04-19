@@ -17,10 +17,18 @@ from process_report import RESULTS_DIR, process_one, process_pdf
 STATIC_DIR = Path("static")
 STATIC_RESULTS_DIR = RESULTS_DIR / "static"
 
+
+def _resource_path(filename: str) -> Path:
+    """Resolve a bundled data file for both PyInstaller and normal execution."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / filename
+    return Path(__file__).parent / filename
+
+
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
 def load_paths() -> list[tuple[int, Path]]:
-    with open("well_test_data_paths.json", encoding="utf-8") as f:
+    with open(_resource_path("well_test_data_paths.json"), encoding="utf-8") as f:
         data = json.load(f)
     return [(i, Path(p)) for i, p in enumerate(data)]
 

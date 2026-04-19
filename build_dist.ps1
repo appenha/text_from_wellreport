@@ -1,5 +1,5 @@
 # build_dist.ps1
-# Creates WellReportProcessor.zip in the project root.
+# Builds WellReportProcessor.exe with PyInstaller, then zips dist\WellReportProcessor\.
 # Run from anywhere:  powershell -ExecutionPolicy Bypass -File build_dist.ps1
 
 $ErrorActionPreference = "Stop"
@@ -7,78 +7,52 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
-$zipName    = "WellReportProcessor.zip"
+$appName    = "WellReportProcessor"
+$specFile   = Join-Path $projectRoot "$appName.spec"
+$distDir    = Join-Path $projectRoot "dist\$appName"
+$zipName    = "$appName.zip"
 $zipPath    = Join-Path $projectRoot $zipName
-$stagingDir = Join-Path $projectRoot "_dist_staging"
 
-# ── Source files to include ───────────────────────────────────────────────────
+# ── Verify PyInstaller is available ──────────────────────────────────────────
 
-$sourceFiles = @(
-    "app.py"
-    "process_report.py"
-    "reg_expressions.py"
-    "paths.py"
-    "settings.py"
-    "rag.py"
-    "main.py"
-    "pyproject.toml"
-    "uv.lock"
-    "well_test_data_paths.json"
-    "launch.bat"
-    "launch.ps1"
-    "README.md"
-)
-
-# ── Clean up any previous staging area ───────────────────────────────────────
-
-if (Test-Path $stagingDir) {
-    Remove-Item $stagingDir -Recurse -Force
+if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
+    Write-Error "pyinstaller not found. Install it with:  pip install pyinstaller"
+    exit 1
 }
-New-Item -ItemType Directory -Path $stagingDir | Out-Null
 
-# ── Copy source files ─────────────────────────────────────────────────────────
+# ── Clean previous build artefacts ───────────────────────────────────────────
 
-# Files that must be ASCII to survive all unzip tools on any locale
-$asciiFiles = @("launch.ps1", "launch.bat")
-
-foreach ($file in $sourceFiles) {
-    $src = Join-Path $projectRoot $file
-    if (Test-Path $src) {
-        $dst = Join-Path $stagingDir $file
-        if ($asciiFiles -contains $file) {
-            # Re-encode as ASCII (strips BOM, replaces non-ASCII with ?)
-            $content = Get-Content $src -Raw -Encoding UTF8
-            [System.IO.File]::WriteAllText($dst, $content, [System.Text.Encoding]::ASCII)
-        } else {
-            Copy-Item $src $dst
-        }
-        Write-Host "  + $file"
-    } else {
-        Write-Host "  ~ skipped (not found): $file" -ForegroundColor DarkGray
+foreach ($dir in @("build", "dist")) {
+    $p = Join-Path $projectRoot $dir
+    if (Test-Path $p) {
+        Write-Host "Removing $dir\ ..." -ForegroundColor DarkGray
+        Remove-Item $p -Recurse -Force
     }
 }
 
-# ── Copy static/ examples (PDFs only — skip cached JSON results) ─────────────
+# ── Run PyInstaller ───────────────────────────────────────────────────────────
 
-$staticSrc = Join-Path $projectRoot "static"
-if (Test-Path $staticSrc) {
-    $staticDst = Join-Path $stagingDir "static"
-    New-Item -ItemType Directory -Path $staticDst | Out-Null
-    Get-ChildItem $staticSrc -File | Where-Object { $_.Extension -match "^\.(pdf|PDF)$" } | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $staticDst $_.Name)
-        Write-Host "  + static\$($_.Name)"
-    }
+Write-Host ""
+Write-Host "Running PyInstaller ..." -ForegroundColor Cyan
+pyinstaller $specFile --noconfirm
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "PyInstaller failed (exit code $LASTEXITCODE)."
+    exit $LASTEXITCODE
 }
 
-# ── Create empty results/ directory (placeholder) ────────────────────────────
+# ── Add a results\ placeholder inside the dist folder ────────────────────────
 
-$resultsDst = Join-Path $stagingDir "results"
-New-Item -ItemType Directory -Path $resultsDst | Out-Null
-# Add a hidden placeholder so the folder is preserved in the zip
+$resultsDst = Join-Path $distDir "results"
+if (-not (Test-Path $resultsDst)) {
+    New-Item -ItemType Directory -Path $resultsDst | Out-Null
+}
 Set-Content (Join-Path $resultsDst ".keep") "" -Encoding ASCII
 Write-Host "  + results\.keep (placeholder)"
 
-# ── Build the zip ─────────────────────────────────────────────────────────────
+# ── Zip the dist folder ───────────────────────────────────────────────────────
+# Use .NET ZipFile instead of Compress-Archive — the latter fails with an
+# "in use by another process" error on base_library.zip inside PyInstaller dist.
 
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
@@ -86,18 +60,16 @@ if (Test-Path $zipPath) {
 
 Write-Host ""
 Write-Host "Creating $zipName ..." -ForegroundColor Cyan
-
-Compress-Archive -Path (Join-Path $stagingDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
-
-# ── Clean up staging area ─────────────────────────────────────────────────────
-
-Remove-Item $stagingDir -Recurse -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory($distDir, $zipPath,
+    [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
 $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
 Write-Host ""
 Write-Host "Done: $zipPath  ($sizeMB MB)" -ForegroundColor Green
+Write-Host "Executable: dist\$appName\$appName.exe" -ForegroundColor Green
 Write-Host ""
 Write-Host "Distribution instructions:" -ForegroundColor Cyan
 Write-Host "  1. Send $zipName to the end user."

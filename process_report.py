@@ -1,6 +1,7 @@
 from rich import print as rprint
 from rich.rule import Rule
 import json
+import sys
 import fitz  # PyMuPDF
 import easyocr
 import numpy as np
@@ -9,8 +10,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from reg_expressions import find_formation_mentions
 
+
+def _resource_path(filename: str) -> Path:
+    """Resolve a bundled data file for both PyInstaller and normal execution."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / filename
+    return Path(__file__).parent / filename
+
+
 def get_paths():
-    with open("well_test_data_paths.json", encoding="utf-8") as f:
+    with open(_resource_path("well_test_data_paths.json"), encoding="utf-8") as f:
         data = json.load(f)
         indexed_paths = list(enumerate(data))
         return [(index, Path(p)) for index, p in indexed_paths]
